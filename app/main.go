@@ -25,6 +25,11 @@ type BindTodo struct {
 	BindTodoFields `boil:",bind"`
 }
 
+func myHook(ctx context.Context, exec boil.ContextExecutor, todo *database.Todo) error {
+	fmt.Printf("todo title %v", todo.Title)
+	return nil
+}
+
 func main() {
 	fmt.Println(os.Getenv("MYSQL_DBNAME"))
 
@@ -41,7 +46,7 @@ func main() {
 
 	defer db.Close()
 
-	ctx := context.Background()
+	// ctx := context.Background()
 
 	// NOTE: SQL文を標準出力に出す
 	boil.DebugMode = true
@@ -199,6 +204,136 @@ func main() {
 			UserID:  1,
 		})
 		todosSlice.InsertAll(ctx, db, boil.Infer())
+	*/
+
+	/*
+		// Update
+		user, _ := database.FindUser(ctx, db, 1)
+		user.Name = "updated_name_1"
+		rowAff, err := user.Update(ctx, db, boil.Infer())
+		fmt.Println(rowAff)
+	*/
+
+	/*
+		// Update All
+		// users, _ := database.Users().All(ctx, db)
+		// rowsAff, _ := users.UpdateAll(ctx, db, database.M{"Name": "update_all_name"})
+		// fmt.Println(rowsAff)
+
+		// rowsAff, _ := database.Users().UpdateAll(ctx, db, database.M{"Name": "updated_all_name"})
+		// fmt.Println(rowsAff)
+	*/
+
+	/*
+		// Upsert
+		var todosSlice database.TodoSlice
+		limit := 1
+		offset := 0
+
+		for {
+			todos, err := database.Todos(
+				qm.Limit(limit),
+				qm.Offset(offset),
+			).All(ctx, db)
+			if err != nil {
+				log.Fatalf("Error fetching records: %v", err)
+			}
+
+			if len(todos) == 0 {
+				break // no more records to fetch
+			}
+
+			for _, todo := range todos {
+				todo.Title = todo.Title + "_upserted"
+				todosSlice = append(todosSlice, todo)
+			}
+
+			offset += limit
+		}
+		todosSlice.UpsertAll(ctx, db, boil.Infer(), boil.Infer())
+	*/
+
+	/*
+		// Delete
+		todo := &database.Todo{
+			Title:   "test_title_delete",
+			Content: null.String{String: "test_content_delete", Valid: true},
+			UserID:  1,
+		}
+		createTodoErr := todo.Insert(ctx, db, boil.Infer())
+		if createTodoErr != nil {
+			log.Fatalln(createTodoErr)
+		}
+
+		rowsAff, deleteErr := todo.Delete(ctx, db)
+		if deleteErr != nil {
+			log.Fatalln(deleteErr)
+		}
+		fmt.Println(rowsAff)
+	*/
+
+	/*
+		// Delete All
+		var todosSlice database.TodoSlice
+		todosSlice = append(todosSlice, &database.Todo{
+			Title:   "test_delete_title",
+			Content: null.String{String: "test_delete_content_1", Valid: true},
+			UserID:  1,
+		})
+		todosSlice = append(todosSlice, &database.Todo{
+			Title:   "test_delete_title",
+			Content: null.String{String: "test_delete_content_2", Valid: true},
+			UserID:  1,
+		})
+		todosSlice.InsertAll(ctx, db, boil.Infer())
+
+		rowsAff, deleteAllErr := database.Todos(qm.Where("title = ?", "test_delete_title")).DeleteAll(ctx, db)
+		if deleteAllErr != nil {
+			log.Fatalln(deleteAllErr)
+		}
+		fmt.Println(rowsAff)
+	*/
+
+	/*
+		// Dependent delete
+		tx, txErr := db.BeginTx(ctx, nil)
+		if txErr != nil {
+			log.Fatalln(txErr)
+		}
+
+		users, _ := database.Users(qm.Where("id = ?", 1)).All(ctx, db)
+		for _, user := range users {
+			// メタプロっぽくはできなさそう
+			// tv := reflect.TypeOf(user.R)
+			// for i := 0; i < tv.NumField(); i++ {
+			// 	t := tv.Field(i)
+			// 	t.DeleteAll(ctx, db)
+			// }
+			if _, err := user.Todos().DeleteAll(ctx, db); err != nil {
+				tx.Rollback()
+				break
+			}
+
+			if _, err := user.Delete(ctx, db); err != nil {
+				tx.Rollback()
+				break
+			}
+		}
+		tx.Commit()
+	*/
+
+	/*
+		// Hooks
+		database.AddTodoHook(boil.AfterInsertHook, myHook)
+		todo := &database.Todo{
+			Title:   "test_title_after_insert_hook",
+			Content: null.String{String: "test_content_after_insert_hook", Valid: true},
+			UserID:  2,
+		}
+		createTodoErr := todo.Insert(ctx, db, boil.Infer())
+		if createTodoErr != nil {
+			log.Fatalln(createTodoErr)
+		}
 	*/
 }
 
