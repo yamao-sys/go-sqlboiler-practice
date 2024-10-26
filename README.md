@@ -11,6 +11,9 @@ GoのSQL Boilerの検証
 		- https://github.com/tiendc/sqlboiler-extensions
 		- bulk insertやupsertを扱えるらしい
 	- sqlboiler mysql
+        - https://zenn.dev/gami/articles/0fb2cf8b36aa09
+        - https://qiita.com/ishihaya/items/38520c5c11f31e382ecf
+        - https://qiita.com/piggydev/items/831b41462bcadfc34cf5
 
 - マイグレーション
 	- sql-migrate
