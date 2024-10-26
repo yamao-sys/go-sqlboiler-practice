@@ -184,6 +184,22 @@ func main() {
 		}
 		fmt.Println(bindSelectedTodo)
 	*/
+
+	/*
+		// Bulk Insert
+		var todosSlice database.TodoSlice
+		todosSlice = append(todosSlice, &database.Todo{
+			Title:   "test_bulk_insert_title_1",
+			Content: null.String{String: "test_bulk_insert_content_1", Valid: true},
+			UserID:  1,
+		})
+		todosSlice = append(todosSlice, &database.Todo{
+			Title:   "test_bulk_insert_title_1",
+			Content: null.String{String: "test_bulk_insert_content_2", Valid: true},
+			UserID:  1,
+		})
+		todosSlice.InsertAll(ctx, db, boil.Infer())
+	*/
 }
 
 func ints64ToInterfaces(nums []int64) []interface{} {
