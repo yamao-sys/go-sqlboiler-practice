@@ -19,3 +19,14 @@ GoのSQL Boilerの検証
 		- https://qiita.com/k-kurikuri/items/946e2bf8c79176ef3ff0
 		- https://qiita.com/hideki_okawa/items/25d2f4e751bb202a06e8
 		- sql-migrate new -env="mysql" コマンド
+
+## 使ってみた所管
+- 大体railsのActiveRecordのような感覚で使用できる
+  - ORMでやりたいCRUD操作はほとんどできる
+    - bulk insertやupsert, delete_allを使いたければsqlboiler-extensionsと合わせて使用することになる
+  - hooksも使える
+  - dependent: :destoryはなしのため、自分でトランザクションを込みでメソッドを作る必要がある
+- 自動生成されるコードによる型が使えて、型安全にやりやすそう
+- GORMのようなinterface型で書くことが少なくなり、実行時エラーを防ぎやすそう
+- ライブラリも継続的に更新されていて、ドキュメントも詳しく、参考URLも豊富
+- マイグレーションツールは別途用意が必要(sql-migrationが公式で紹介されていたし、それで良さそう)
