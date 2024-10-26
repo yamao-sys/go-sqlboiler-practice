@@ -175,10 +175,14 @@ var TodoWhere = struct {
 
 // TodoRels is where relationship names are stored.
 var TodoRels = struct {
-}{}
+	User string
+}{
+	User: "User",
+}
 
 // todoR is where relationships are stored.
 type todoR struct {
+	User *User `boil:"User" json:"User" toml:"User" yaml:"User"`
 }
 
 // NewStruct creates a new relationship struct
@@ -186,13 +190,20 @@ func (*todoR) NewStruct() *todoR {
 	return &todoR{}
 }
 
+func (r *todoR) GetUser() *User {
+	if r == nil {
+		return nil
+	}
+	return r.User
+}
+
 // todoL is where Load methods for each relationship are stored.
 type todoL struct{}
 
 var (
 	todoAllColumns            = []string{"id", "user_id", "title", "content", "created_at", "updated_at"}
-	todoColumnsWithoutDefault = []string{"id", "user_id", "title", "content", "created_at", "updated_at"}
-	todoColumnsWithDefault    = []string{}
+	todoColumnsWithoutDefault = []string{"user_id", "title", "content", "created_at", "updated_at"}
+	todoColumnsWithDefault    = []string{"id"}
 	todoPrimaryKeyColumns     = []string{"id"}
 	todoGeneratedColumns      = []string{}
 )
@@ -502,6 +513,184 @@ func (q todoQuery) Exists(ctx context.Context, exec boil.ContextExecutor) (bool,
 	return count > 0, nil
 }
 
+// User pointed to by the foreign key.
+func (o *Todo) User(mods ...qm.QueryMod) userQuery {
+	queryMods := []qm.QueryMod{
+		qm.Where("`id` = ?", o.UserID),
+	}
+
+	queryMods = append(queryMods, mods...)
+
+	return Users(queryMods...)
+}
+
+// LoadUser allows an eager lookup of values, cached into the
+// loaded structs of the objects. This is for an N-1 relationship.
+func (todoL) LoadUser(ctx context.Context, e boil.ContextExecutor, singular bool, maybeTodo interface{}, mods queries.Applicator) error {
+	var slice []*Todo
+	var object *Todo
+
+	if singular {
+		var ok bool
+		object, ok = maybeTodo.(*Todo)
+		if !ok {
+			object = new(Todo)
+			ok = queries.SetFromEmbeddedStruct(&object, &maybeTodo)
+			if !ok {
+				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", object, maybeTodo))
+			}
+		}
+	} else {
+		s, ok := maybeTodo.(*[]*Todo)
+		if ok {
+			slice = *s
+		} else {
+			ok = queries.SetFromEmbeddedStruct(&slice, maybeTodo)
+			if !ok {
+				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", slice, maybeTodo))
+			}
+		}
+	}
+
+	args := make(map[interface{}]struct{})
+	if singular {
+		if object.R == nil {
+			object.R = &todoR{}
+		}
+		args[object.UserID] = struct{}{}
+
+	} else {
+		for _, obj := range slice {
+			if obj.R == nil {
+				obj.R = &todoR{}
+			}
+
+			args[obj.UserID] = struct{}{}
+
+		}
+	}
+
+	if len(args) == 0 {
+		return nil
+	}
+
+	argsSlice := make([]interface{}, len(args))
+	i := 0
+	for arg := range args {
+		argsSlice[i] = arg
+		i++
+	}
+
+	query := NewQuery(
+		qm.From(`users`),
+		qm.WhereIn(`users.id in ?`, argsSlice...),
+	)
+	if mods != nil {
+		mods.Apply(query)
+	}
+
+	results, err := query.QueryContext(ctx, e)
+	if err != nil {
+		return errors.Wrap(err, "failed to eager load User")
+	}
+
+	var resultSlice []*User
+	if err = queries.Bind(results, &resultSlice); err != nil {
+		return errors.Wrap(err, "failed to bind eager loaded slice User")
+	}
+
+	if err = results.Close(); err != nil {
+		return errors.Wrap(err, "failed to close results of eager load for users")
+	}
+	if err = results.Err(); err != nil {
+		return errors.Wrap(err, "error occurred during iteration of eager loaded relations for users")
+	}
+
+	if len(userAfterSelectHooks) != 0 {
+		for _, obj := range resultSlice {
+			if err := obj.doAfterSelectHooks(ctx, e); err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(resultSlice) == 0 {
+		return nil
+	}
+
+	if singular {
+		foreign := resultSlice[0]
+		object.R.User = foreign
+		if foreign.R == nil {
+			foreign.R = &userR{}
+		}
+		foreign.R.Todos = append(foreign.R.Todos, object)
+		return nil
+	}
+
+	for _, local := range slice {
+		for _, foreign := range resultSlice {
+			if local.UserID == foreign.ID {
+				local.R.User = foreign
+				if foreign.R == nil {
+					foreign.R = &userR{}
+				}
+				foreign.R.Todos = append(foreign.R.Todos, local)
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+// SetUser of the todo to the related item.
+// Sets o.R.User to related.
+// Adds o to related.R.Todos.
+func (o *Todo) SetUser(ctx context.Context, exec boil.ContextExecutor, insert bool, related *User) error {
+	var err error
+	if insert {
+		if err = related.Insert(ctx, exec, boil.Infer()); err != nil {
+			return errors.Wrap(err, "failed to insert into foreign table")
+		}
+	}
+
+	updateQuery := fmt.Sprintf(
+		"UPDATE `todos` SET %s WHERE %s",
+		strmangle.SetParamNames("`", "`", 0, []string{"user_id"}),
+		strmangle.WhereClause("`", "`", 0, todoPrimaryKeyColumns),
+	)
+	values := []interface{}{related.ID, o.ID}
+
+	if boil.IsDebug(ctx) {
+		writer := boil.DebugWriterFrom(ctx)
+		fmt.Fprintln(writer, updateQuery)
+		fmt.Fprintln(writer, values)
+	}
+	if _, err = exec.ExecContext(ctx, updateQuery, values...); err != nil {
+		return errors.Wrap(err, "failed to update local table")
+	}
+
+	o.UserID = related.ID
+	if o.R == nil {
+		o.R = &todoR{
+			User: related,
+		}
+	} else {
+		o.R.User = related
+	}
+
+	if related.R == nil {
+		related.R = &userR{
+			Todos: TodoSlice{o},
+		}
+	} else {
+		related.R.Todos = append(related.R.Todos, o)
+	}
+
+	return nil
+}
+
 // Todos retrieves all the records using an executor.
 func Todos(mods ...qm.QueryMod) todoQuery {
 	mods = append(mods, qm.From("`todos`"))
@@ -612,15 +801,26 @@ func (o *Todo) Insert(ctx context.Context, exec boil.ContextExecutor, columns bo
 		fmt.Fprintln(writer, cache.query)
 		fmt.Fprintln(writer, vals)
 	}
-	_, err = exec.ExecContext(ctx, cache.query, vals...)
+	result, err := exec.ExecContext(ctx, cache.query, vals...)
 
 	if err != nil {
 		return errors.Wrap(err, "database: unable to insert into todos")
 	}
 
+	var lastID int64
 	var identifierCols []interface{}
 
 	if len(cache.retMapping) == 0 {
+		goto CacheNoHooks
+	}
+
+	lastID, err = result.LastInsertId()
+	if err != nil {
+		return ErrSyncFail
+	}
+
+	o.ID = int(lastID)
+	if lastID != 0 && len(cache.retMapping) == 1 && cache.retMapping[0] == todoMapping["id"] {
 		goto CacheNoHooks
 	}
 
@@ -890,16 +1090,27 @@ func (o *Todo) Upsert(ctx context.Context, exec boil.ContextExecutor, updateColu
 		fmt.Fprintln(writer, cache.query)
 		fmt.Fprintln(writer, vals)
 	}
-	_, err = exec.ExecContext(ctx, cache.query, vals...)
+	result, err := exec.ExecContext(ctx, cache.query, vals...)
 
 	if err != nil {
 		return errors.Wrap(err, "database: unable to upsert for todos")
 	}
 
+	var lastID int64
 	var uniqueMap []uint64
 	var nzUniqueCols []interface{}
 
 	if len(cache.retMapping) == 0 {
+		goto CacheNoHooks
+	}
+
+	lastID, err = result.LastInsertId()
+	if err != nil {
+		return ErrSyncFail
+	}
+
+	o.ID = int(lastID)
+	if lastID != 0 && len(cache.retMapping) == 1 && cache.retMapping[0] == todoMapping["id"] {
 		goto CacheNoHooks
 	}
 
@@ -1100,3 +1311,529 @@ func TodoExists(ctx context.Context, exec boil.ContextExecutor, iD int) (bool, e
 func (o *Todo) Exists(ctx context.Context, exec boil.ContextExecutor) (bool, error) {
 	return TodoExists(ctx, exec, o.ID)
 }
+
+// /////////////////////////////// BEGIN EXTENSIONS /////////////////////////////////
+// Expose table columns
+var (
+	TodoAllColumns            = todoAllColumns
+	TodoColumnsWithoutDefault = todoColumnsWithoutDefault
+	TodoColumnsWithDefault    = todoColumnsWithDefault
+	TodoPrimaryKeyColumns     = todoPrimaryKeyColumns
+	TodoGeneratedColumns      = todoGeneratedColumns
+)
+
+// GetID get ID from model object
+func (o *Todo) GetID() int {
+	return o.ID
+}
+
+// GetIDs extract IDs from model objects
+func (s TodoSlice) GetIDs() []int {
+	result := make([]int, len(s))
+	for i := range s {
+		result[i] = s[i].ID
+	}
+	return result
+}
+
+// GetIntfIDs extract IDs from model objects as interface slice
+func (s TodoSlice) GetIntfIDs() []interface{} {
+	result := make([]interface{}, len(s))
+	for i := range s {
+		result[i] = s[i].ID
+	}
+	return result
+}
+
+// ToIDMap convert a slice of model objects to a map with ID as key
+func (s TodoSlice) ToIDMap() map[int]*Todo {
+	result := make(map[int]*Todo, len(s))
+	for _, o := range s {
+		result[o.ID] = o
+	}
+	return result
+}
+
+// ToUniqueItems construct a slice of unique items from the given slice
+func (s TodoSlice) ToUniqueItems() TodoSlice {
+	result := make(TodoSlice, 0, len(s))
+	mapChk := make(map[int]struct{}, len(s))
+	for i := len(s) - 1; i >= 0; i-- {
+		o := s[i]
+		if _, ok := mapChk[o.ID]; !ok {
+			mapChk[o.ID] = struct{}{}
+			result = append(result, o)
+		}
+	}
+	return result
+}
+
+// FindItemByID find item by ID in the slice
+func (s TodoSlice) FindItemByID(id int) *Todo {
+	for _, o := range s {
+		if o.ID == id {
+			return o
+		}
+	}
+	return nil
+}
+
+// FindMissingItemIDs find all item IDs that are not in the list
+// NOTE: the input ID slice should contain unique values
+func (s TodoSlice) FindMissingItemIDs(expectedIDs []int) []int {
+	if len(s) == 0 {
+		return expectedIDs
+	}
+	result := []int{}
+	mapChk := s.ToIDMap()
+	for _, id := range expectedIDs {
+		if _, ok := mapChk[id]; !ok {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+// InsertAll inserts all rows with the specified column values, using an executor.
+// IMPORTANT: this will calculate the widest columns from all items in the slice, be careful if you want to use default column values
+func (o TodoSlice) InsertAll(ctx context.Context, exec boil.ContextExecutor, columns boil.Columns) (int64, error) {
+	if len(o) == 0 {
+		return 0, nil
+	}
+
+	// Calculate the widest columns from all rows need to insert
+	wlCols := make(map[string]struct{}, 10)
+	for _, row := range o {
+		wl, _ := columns.InsertColumnSet(
+			todoAllColumns,
+			todoColumnsWithDefault,
+			todoColumnsWithoutDefault,
+			queries.NonZeroDefaultSet(todoColumnsWithDefault, row),
+		)
+		for _, col := range wl {
+			wlCols[col] = struct{}{}
+		}
+	}
+	wl := make([]string, 0, len(wlCols))
+	for _, col := range todoAllColumns {
+		if _, ok := wlCols[col]; ok {
+			wl = append(wl, col)
+		}
+	}
+
+	var sql string
+	vals := []interface{}{}
+	for i, row := range o {
+		if !boil.TimestampsAreSkipped(ctx) {
+			currTime := time.Now().In(boil.GetLocation())
+			if row.CreatedAt.IsZero() {
+				row.CreatedAt = currTime
+			}
+			if row.UpdatedAt.IsZero() {
+				row.UpdatedAt = currTime
+			}
+		}
+
+		if err := row.doBeforeInsertHooks(ctx, exec); err != nil {
+			return 0, err
+		}
+
+		if i == 0 {
+			sql = "INSERT INTO `todos` " + "(`" + strings.Join(wl, "`,`") + "`)" + " VALUES "
+		}
+		sql += strmangle.Placeholders(dialect.UseIndexPlaceholders, len(wl), len(vals)+1, len(wl))
+		if i != len(o)-1 {
+			sql += ","
+		}
+		valMapping, err := queries.BindMapping(todoType, todoMapping, wl)
+		if err != nil {
+			return 0, err
+		}
+
+		value := reflect.Indirect(reflect.ValueOf(row))
+		vals = append(vals, queries.ValuesFromMapping(value, valMapping)...)
+	}
+
+	if boil.IsDebug(ctx) {
+		writer := boil.DebugWriterFrom(ctx)
+		fmt.Fprintln(writer, sql)
+		fmt.Fprintln(writer, vals)
+	}
+
+	result, err := exec.ExecContext(ctx, sql, vals...)
+	if err != nil {
+		return 0, errors.Wrap(err, "database: unable to insert all from todo slice")
+	}
+
+	rowsAff, err := result.RowsAffected()
+	if err != nil {
+		return 0, errors.Wrap(err, "database: failed to get rows affected by insertall for todos")
+	}
+
+	if len(todoAfterInsertHooks) != 0 {
+		for _, obj := range o {
+			if err := obj.doAfterInsertHooks(ctx, exec); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	return rowsAff, nil
+}
+
+// InsertIgnoreAll inserts all rows with ignoring the existing ones having the same primary key values.
+// IMPORTANT: this will calculate the widest columns from all items in the slice, be careful if you want to use default column values
+func (o TodoSlice) InsertIgnoreAll(ctx context.Context, exec boil.ContextExecutor, columns boil.Columns) (int64, error) {
+	return o.UpsertAll(ctx, exec, boil.None(), columns)
+}
+
+// UpsertAll inserts or updates all rows
+// Currently it doesn't support "NoContext" and "NoRowsAffected"
+// IMPORTANT: this will calculate the widest columns from all items in the slice, be careful if you want to use default column values
+func (o TodoSlice) UpsertAll(ctx context.Context, exec boil.ContextExecutor, updateColumns, insertColumns boil.Columns) (int64, error) {
+	if len(o) == 0 {
+		return 0, nil
+	}
+
+	// Calculate the widest columns from all rows need to upsert
+	insertCols := make(map[string]struct{}, 10)
+	for _, row := range o {
+		nzUniques := queries.NonZeroDefaultSet(mySQLTodoUniqueColumns, row)
+		if len(nzUniques) == 0 {
+			return 0, errors.New("cannot upsert with a table that cannot conflict on a unique column")
+		}
+		insert, _ := insertColumns.InsertColumnSet(
+			todoAllColumns,
+			todoColumnsWithDefault,
+			todoColumnsWithoutDefault,
+			queries.NonZeroDefaultSet(todoColumnsWithDefault, row),
+		)
+		for _, col := range insert {
+			insertCols[col] = struct{}{}
+		}
+	}
+	insert := make([]string, 0, len(insertCols))
+	for _, col := range todoAllColumns {
+		if _, ok := insertCols[col]; ok {
+			insert = append(insert, col)
+		}
+	}
+
+	update := updateColumns.UpdateColumnSet(
+		todoAllColumns,
+		todoPrimaryKeyColumns,
+	)
+	if !updateColumns.IsNone() && len(update) == 0 {
+		return 0, errors.New("database: unable to upsert todos, could not build update column list")
+	}
+
+	buf := strmangle.GetBuffer()
+	defer strmangle.PutBuffer(buf)
+
+	if len(update) == 0 {
+		fmt.Fprintf(
+			buf,
+			"INSERT IGNORE INTO `todos`(%s) VALUES %s",
+			strings.Join(strmangle.IdentQuoteSlice(dialect.LQ, dialect.RQ, insert), ","),
+			strmangle.Placeholders(false, len(insert)*len(o), 1, len(insert)),
+		)
+	} else {
+		fmt.Fprintf(
+			buf,
+			"INSERT INTO `todos`(%s) VALUES %s ON DUPLICATE KEY UPDATE ",
+			strings.Join(strmangle.IdentQuoteSlice(dialect.LQ, dialect.RQ, insert), ","),
+			strmangle.Placeholders(false, len(insert)*len(o), 1, len(insert)),
+		)
+
+		for i, v := range update {
+			if i != 0 {
+				buf.WriteByte(',')
+			}
+			quoted := strmangle.IdentQuote(dialect.LQ, dialect.RQ, v)
+			buf.WriteString(quoted)
+			buf.WriteString(" = VALUES(")
+			buf.WriteString(quoted)
+			buf.WriteByte(')')
+		}
+	}
+
+	query := buf.String()
+	valueMapping, err := queries.BindMapping(todoType, todoMapping, insert)
+	if err != nil {
+		return 0, err
+	}
+
+	var vals []interface{}
+	for _, row := range o {
+		if !boil.TimestampsAreSkipped(ctx) {
+			currTime := time.Now().In(boil.GetLocation())
+			if row.CreatedAt.IsZero() {
+				row.CreatedAt = currTime
+			}
+
+			row.UpdatedAt = currTime
+		}
+
+		if err := row.doBeforeUpsertHooks(ctx, exec); err != nil {
+			return 0, err
+		}
+
+		value := reflect.Indirect(reflect.ValueOf(row))
+		vals = append(vals, queries.ValuesFromMapping(value, valueMapping)...)
+	}
+
+	if boil.IsDebug(ctx) {
+		writer := boil.DebugWriterFrom(ctx)
+		fmt.Fprintln(writer, query)
+		fmt.Fprintln(writer, vals)
+	}
+
+	result, err := exec.ExecContext(ctx, query, vals...)
+	if err != nil {
+		return 0, errors.Wrap(err, "database: unable to upsert for todos")
+	}
+
+	rowsAff, err := result.RowsAffected()
+	if err != nil {
+		return 0, errors.Wrap(err, "database: failed to get rows affected by upsert for todos")
+	}
+
+	if len(todoAfterUpsertHooks) != 0 {
+		for _, obj := range o {
+			if err := obj.doAfterUpsertHooks(ctx, exec); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	return rowsAff, nil
+}
+
+// DeleteAllByPage delete all Todo records from the slice.
+// This function deletes data by pages to avoid exceeding Mysql limitation (max placeholders: 65535)
+// Mysql Error 1390: Prepared statement contains too many placeholders.
+func (s TodoSlice) DeleteAllByPage(ctx context.Context, exec boil.ContextExecutor, limits ...int) (int64, error) {
+	length := len(s)
+	if length == 0 {
+		return 0, nil
+	}
+
+	// MySQL max placeholders = 65535
+	chunkSize := DefaultPageSize
+	if len(limits) > 0 && limits[0] > 0 && limits[0] <= MaxPageSize {
+		chunkSize = limits[0]
+	}
+	if length <= chunkSize {
+		return s.DeleteAll(ctx, exec)
+	}
+
+	rowsAffected := int64(0)
+	start := 0
+	for {
+		end := start + chunkSize
+		if end > length {
+			end = length
+		}
+		rows, err := s[start:end].DeleteAll(ctx, exec)
+		if err != nil {
+			return rowsAffected, err
+		}
+
+		rowsAffected += rows
+		start = end
+		if start >= length {
+			break
+		}
+	}
+	return rowsAffected, nil
+}
+
+// UpdateAllByPage update all Todo records from the slice.
+// This function updates data by pages to avoid exceeding Mysql limitation (max placeholders: 65535)
+// Mysql Error 1390: Prepared statement contains too many placeholders.
+func (s TodoSlice) UpdateAllByPage(ctx context.Context, exec boil.ContextExecutor, cols M, limits ...int) (int64, error) {
+	length := len(s)
+	if length == 0 {
+		return 0, nil
+	}
+
+	// MySQL max placeholders = 65535
+	// NOTE (eric): len(cols) should not be too big
+	chunkSize := DefaultPageSize
+	if len(limits) > 0 && limits[0] > 0 && limits[0] <= MaxPageSize {
+		chunkSize = limits[0]
+	}
+	if length <= chunkSize {
+		return s.UpdateAll(ctx, exec, cols)
+	}
+
+	rowsAffected := int64(0)
+	start := 0
+	for {
+		end := start + chunkSize
+		if end > length {
+			end = length
+		}
+		rows, err := s[start:end].UpdateAll(ctx, exec, cols)
+		if err != nil {
+			return rowsAffected, err
+		}
+
+		rowsAffected += rows
+		start = end
+		if start >= length {
+			break
+		}
+	}
+	return rowsAffected, nil
+}
+
+// InsertAllByPage insert all Todo records from the slice.
+// This function inserts data by pages to avoid exceeding Mysql limitation (max placeholders: 65535)
+// Mysql Error 1390: Prepared statement contains too many placeholders.
+func (s TodoSlice) InsertAllByPage(ctx context.Context, exec boil.ContextExecutor, columns boil.Columns, limits ...int) (int64, error) {
+	length := len(s)
+	if length == 0 {
+		return 0, nil
+	}
+
+	// MySQL max placeholders = 65535
+	chunkSize := MaxPageSize / reflect.ValueOf(&TodoColumns).Elem().NumField()
+	if len(limits) > 0 && limits[0] > 0 && limits[0] < chunkSize {
+		chunkSize = limits[0]
+	}
+	if length <= chunkSize {
+		return s.InsertAll(ctx, exec, columns)
+	}
+
+	rowsAffected := int64(0)
+	start := 0
+	for {
+		end := start + chunkSize
+		if end > length {
+			end = length
+		}
+		rows, err := s[start:end].InsertAll(ctx, exec, columns)
+		if err != nil {
+			return rowsAffected, err
+		}
+
+		rowsAffected += rows
+		start = end
+		if start >= length {
+			break
+		}
+	}
+	return rowsAffected, nil
+}
+
+// InsertIgnoreAllByPage insert all Todo records from the slice.
+// This function inserts data by pages to avoid exceeding Postgres limitation (max parameters: 65535)
+func (s TodoSlice) InsertIgnoreAllByPage(ctx context.Context, exec boil.ContextExecutor, columns boil.Columns, limits ...int) (int64, error) {
+	length := len(s)
+	if length == 0 {
+		return 0, nil
+	}
+
+	// max number of parameters = 65535
+	chunkSize := MaxPageSize / reflect.ValueOf(&TodoColumns).Elem().NumField()
+	if len(limits) > 0 && limits[0] > 0 && limits[0] < chunkSize {
+		chunkSize = limits[0]
+	}
+	if length <= chunkSize {
+		return s.InsertIgnoreAll(ctx, exec, columns)
+	}
+
+	rowsAffected := int64(0)
+	start := 0
+	for {
+		end := start + chunkSize
+		if end > length {
+			end = length
+		}
+		rows, err := s[start:end].InsertIgnoreAll(ctx, exec, columns)
+		if err != nil {
+			return rowsAffected, err
+		}
+
+		rowsAffected += rows
+		start = end
+		if start >= length {
+			break
+		}
+	}
+	return rowsAffected, nil
+}
+
+// UpsertAllByPage upsert all Todo records from the slice.
+// This function upserts data by pages to avoid exceeding Mysql limitation (max placeholders: 65535)
+// Mysql Error 1390: Prepared statement contains too many placeholders.
+func (s TodoSlice) UpsertAllByPage(ctx context.Context, exec boil.ContextExecutor, updateColumns, insertColumns boil.Columns, limits ...int) (int64, error) {
+	length := len(s)
+	if length == 0 {
+		return 0, nil
+	}
+
+	// MySQL max placeholders = 65535
+	chunkSize := MaxPageSize / reflect.ValueOf(&TodoColumns).Elem().NumField()
+	if len(limits) > 0 && limits[0] > 0 && limits[0] < chunkSize {
+		chunkSize = limits[0]
+	}
+	if length <= chunkSize {
+		return s.UpsertAll(ctx, exec, updateColumns, insertColumns)
+	}
+
+	rowsAffected := int64(0)
+	start := 0
+	for {
+		end := start + chunkSize
+		if end > length {
+			end = length
+		}
+		rows, err := s[start:end].UpsertAll(ctx, exec, updateColumns, insertColumns)
+		if err != nil {
+			return rowsAffected, err
+		}
+
+		rowsAffected += rows
+		start = end
+		if start >= length {
+			break
+		}
+	}
+	return rowsAffected, nil
+}
+
+// LoadUsersByPage performs eager loading of values by page. This is for a N-1 relationship.
+func (s TodoSlice) LoadUsersByPage(ctx context.Context, e boil.ContextExecutor, mods ...qm.QueryMod) error {
+	return s.LoadUsersByPageEx(ctx, e, DefaultPageSize, mods...)
+}
+func (s TodoSlice) LoadUsersByPageEx(ctx context.Context, e boil.ContextExecutor, pageSize int, mods ...qm.QueryMod) error {
+	if len(s) == 0 {
+		return nil
+	}
+	for _, chunk := range chunkSlice[*Todo](s, pageSize) {
+		if err := chunk[0].L.LoadUser(ctx, e, false, &chunk, queryMods(mods)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s TodoSlice) GetLoadedUsers() UserSlice {
+	result := make(UserSlice, 0, len(s))
+	mapCheckDup := make(map[*User]struct{})
+	for _, item := range s {
+		if item.R == nil || item.R.User == nil {
+			continue
+		}
+		if _, ok := mapCheckDup[item.R.User]; ok {
+			continue
+		}
+		result = append(result, item.R.User)
+		mapCheckDup[item.R.User] = struct{}{}
+	}
+	return result
+}
+
+///////////////////////////////// END EXTENSIONS /////////////////////////////////
